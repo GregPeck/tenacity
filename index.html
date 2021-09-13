@@ -1,0 +1,412 @@
+<html><head><title>CUBE</title><meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<script src="stats.min.js"></script>
+<script src="back.js">ICI_LE_SCRIPT_MINIFIED</script><style type="text/css">body {margin:0;}#HUD {position:absolute;top:0;left:0;}</style>
+<script id="fragmentShaderCamera" type="x-shader/x-fragment">
+precision mediump int;
+precision highp float;
+
+uniform sampler2D textureID;
+uniform sampler2D depthTextureID;
+uniform vec3 endPosition;
+uniform float it;
+uniform int isPlayer;
+uniform int objectType;
+uniform int isGround;
+uniform int level;
+uniform vec2 resolution;
+
+varying vec2 uv;
+varying highp vec3 vLighting;
+varying vec4 v_Vertex_relative_to_light;
+varying vec3 localPosition;
+varying vec3 worldPositionOK;
+varying vec3 normal;
+//
+// Electricité
+//
+vec3 random3(vec3 c) {
+	float j = 4096.*sin(dot(c,vec3(17., 59.4, 15.)));
+	vec3 r;
+	r.z = fract(512.*j);
+	j *= .125;
+	r.x = fract(512.*j);
+	j *= .125;
+	r.y = fract(512.*j);
+	return r-.5;
+}
+float simplex3d(vec3 p) {
+	 vec3 s = floor(p + dot(p, vec3(.3333333)));
+	 vec3 x = p - s + dot(s, vec3(.1666667));
+	 vec3 e = step(vec3(0.), x - x.yzx);
+	 vec3 i1 = e*(1. - e.zxy);
+	 vec3 i2 = 1. - e.zxy*(1. - e);
+	 vec3 x1 = x - i1 + .16;
+	 vec3 x2 = x - i2 + 2.*.16;
+	 vec3 x3 = x - 1. + 3.*.16;
+	 vec4 w, d;
+	 w.x = dot(x, x);
+	 w.y = dot(x1, x1);
+	 w.z = dot(x2, x2);
+	 w.w = dot(x3, x3);
+	 w = max(.6 - w, 0.);
+	 d.x = dot(random3(s), x);
+	 d.y = dot(random3(s + i1), x1);
+	 d.z = dot(random3(s + i2), x2);
+	 d.w = dot(random3(s + 1.), x3);
+	 w *= w;
+	 w *= w;
+	 d *= w;
+	 return dot(d, vec4(52.));
+}
+//Lave
+mat2 makem2(float theta){
+	float c = cos(theta);
+	float s = sin(theta);
+	return mat2(c,-s,s,c);
+}
+float noise2(vec2 x){ 
+	return texture2D(textureID, x*.01).x;
+}
+float flow(vec2 p) {
+	float z=2.;
+	float rz = 0.;
+	float speed = it/512.;
+	for (float i= 1.;i < 7.;i++ ) {
+		p += speed*.6;
+		rz+= (sin(noise2(p)*7.)*.5+.5)/z;
+		z *= 1.4;
+		p *= 2.;
+	}
+	return rz;	
+}
+
+// TV
+float noiseTV(vec2 pos, float evolve) {
+    float e = fract(evolve*.01);
+    float cx  = pos.x*e;
+    float cy  = pos.y*e;
+    return fract(23. * fract(2. / fract(fract(cx*2.4 / cy*23. + pow(abs(cy/22.4),2.)))));
+}
+
+// Saleté
+float _texture(vec3 p, float size) {
+	p=abs(.5-fract(p*size));
+	vec3 c=vec3(3.);
+	float es, l=es=0.;
+	for (int i = 0; i < 8; i++) { 
+		p = abs(p + c) - abs(p - c) - p; 
+		p/= clamp(dot(p, p), .0, 1.);
+		p = p* -2.5 + c;
+		if ( mod(float(i), 2.) < 1. ) { 
+			float pl = l;
+			l = length(p);
+			es+= exp(-1. / abs(l - pl));
+		}
+	}
+	return es;
+}
+
+// Texture marbre
+float random(in vec2 p) { 
+	return fract(sin(dot(p.xy, vec2(12.9898,58.233))) * 43758.5453123); 
+}
+float noise (in vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+
+	float a = random(i);
+	float b = random(i + vec2(1., 0.));
+	float c = random(i + vec2(0., 1.));
+	float d = random(i + vec2(1., 1.));
+
+	vec2 u = f * f * (3. - 2. * f);
+	return mix(a, b, u.x) + (c - a)* u.y * (1. - u.x) + (d - b) * u.x * u.y;
+}
+float fbm(in vec2 p) {
+	float value = 0.;
+	float amplitude = 1.;
+
+	for (int i = 0; i < 6; i++) {
+		value += amplitude * noise(p);
+		p *= 3.;
+		amplitude *= .5;
+	}
+	return value;
+}
+vec4 mainNoise(vec2 uv) {
+	return vec4( fbm(uv + (fbm(uv) * 5.) ) );
+}
+
+void main() {
+	if (isPlayer>=20) { //Mort
+		vec3 colour = vec3(noiseTV(gl_FragCoord.xy,it));
+		gl_FragColor = vec4(colour, 1.);
+		return;
+	}
+	if (objectType==2) { //Elec
+		vec2 uv2 = uv * 2. -1.;  
+		if (abs(1.-uv2.x)<.10 && abs(uv2.y)<.2) { //L'ouverture blanche
+			gl_FragColor = vec4(1.);
+		} else {
+			vec3 col = vec3(1.4, 1.4, 1.8);
+			col = col * -pow(abs((.5*simplex3d(vec3(vec3(worldPositionOK.xz / 2., it*.007)*12.))) * -(clamp((uv2.x * -uv2.x * .16) + .55, 0., 1.)) + uv2.y), .4) + col;                    
+			col*= col;
+			col*= col;
+			gl_FragColor = vec4(col, col);
+		}
+	} else if (isGround==1 && worldPositionOK.y<2.1) { //Lave, eau
+		if (level<=1) { //eau
+			gl_FragColor = vec4((vLighting * vec3(.25, .25, .8)) - _texture(worldPositionOK+(it/200.), .41)/40., .7);
+		} else { //Lave
+			vec2 p = worldPositionOK.xz;
+			vec3 col = vec3(.2,.07,.01)/flow(p);
+			col = pow(col,vec3(1.4)) * 4.;
+			gl_FragColor= vec4(col * vLighting * (gl_FragCoord.w * 10.), 1.);
+		}
+		
+		//Boue
+		if (level==8 || level==9) {
+			gl_FragColor = vec4((vLighting * vec3(.62, .38, .0)) * 0.5 - _texture(worldPositionOK+(it/200.), .01)/40., .7);
+			gl_FragColor.b=0.0;
+			gl_FragColor.a=1.0;
+			return;
+		}
+	} else if (objectType==1) { //gem
+		gl_FragColor = vec4(localPosition.xzy*4.*vLighting*(gl_FragCoord.w*10.),.5);
+		return;
+	} else if (isPlayer>0) { //Joueur
+		gl_FragColor.a = 1.;
+		if (isPlayer>0 && isPlayer<5) {
+			gl_FragColor.rgb = vec3(.4, .22, .19);
+		} else if (isPlayer>=5 && isPlayer<=8) {
+			gl_FragColor.rgb = vec3(.25, .25, .45);
+		} else if (isPlayer>8) {
+			gl_FragColor.rgb = vec3(1.);
+		}
+		if (isPlayer==9) { //Les yeux
+			if (localPosition.x>=.24) {
+				float eyeHeight = .05;
+				if (mod(it, 200.)<10.) {
+					eyeHeight=.01;
+				}
+				if (abs(localPosition.z) > .05 && abs(localPosition.z) < .15 && abs(.075 - localPosition.y) <= eyeHeight) {
+					gl_FragColor.rgb = vec3(0.);
+				}
+				
+				if (abs(localPosition.z) > .075 && abs(localPosition.z) < .10 && abs(.065 - localPosition.y) <= eyeHeight/2.0) {
+					gl_FragColor.rgb = vec3(1.);
+				}
+				
+			}
+		}
+		gl_FragColor.rgb *= 1.8;
+	} else { //Sol et caisse
+		vec4 tc = texture2D(textureID, vec2(uv.x,uv.y));
+		gl_FragColor = vec4(tc.rgb, tc.a);
+
+		float n = noiseTV(uv.xy, 1.); //Ajoute un effet
+		gl_FragColor.rgb+= vec3(n*.1);
+		
+		
+		if (objectType==4) { //Switch
+			float l = length(uv * 2. -1.);
+			float qty = .5 + sin(it/60.)*.15;
+			if (l>qty && l<qty+.1) {
+				if (level==8 || level==9) {
+					gl_FragColor.rgb += vec3(1., 0., l*.5) * (2. - qty);
+				} else {
+					gl_FragColor.rgb += vec3(1., 0., l*.5) * (1. - qty);
+				}
+			}
+		} else if (objectType==3) { //Elevator
+			float l = length(uv * 2. -1.);
+			for (float i=0.; i<120.; i+=120./5.) {
+				float qty = mod((it+i)/120., 1.) / 1.;
+				if (l>qty && l<qty+.1) {
+					gl_FragColor.rgb += vec3(l*.5, .0, 1.) * (1. - qty);
+				}
+			}
+		}
+		
+		if (level<2) {
+			//Ajoute une texture sale au sol
+			float k = _texture(worldPositionOK, .05); 
+			gl_FragColor += k/20.;
+		}
+		
+		if (level==8 || level==9) {
+			//Marécage
+			vec2 pG =  worldPositionOK.xy;
+			if (normal.y>0.) {
+				pG = worldPositionOK.xz;
+			} else if (abs(normal.x)>0.) {
+				pG = worldPositionOK.yz;
+			}
+			float f = .6 * mainNoise( 1.*pG).r; 
+			f += .25 * mainNoise( 4.*pG).r;
+			f = .8*f; //adjust brightness
+			
+			if (normal.y>0.) {
+				gl_FragColor *= vec4(vec3(f, f*1.6, f*.8), 1.);
+			} else {
+				gl_FragColor *= vec4(vec3(f, f*1., f*.8), 1.);
+			}
+		}
+		
+		if (objectType==5) {
+			gl_FragColor.rgb*= 1.3;
+		}
+	}
+	//Ombres
+	vec3 vertex_relative_to_light = v_Vertex_relative_to_light.xyz / v_Vertex_relative_to_light.w;
+	vertex_relative_to_light = vertex_relative_to_light * .5 + .5;
+	vec4 shadowmap_color = texture2D(depthTextureID, vertex_relative_to_light.xy);
+	float shadowmap_distance = shadowmap_color.r * 2.;
+	gl_FragColor.rgb *= shadowmap_distance * vLighting;
+	
+	gl_FragColor.rgb *= vec3(mix(.2, 1., localPosition.y/6.));
+	
+	if (normal.y>0.) {
+		gl_FragColor.rgb*=.8;
+	}
+	return;
+}
+
+</script>
+
+<script id="vertexShaderCamera" type="x-shader/x-vertex">
+precision mediump int;
+precision highp float;
+
+attribute vec3 vertexPosition;
+attribute vec2 aTextureCoord;
+attribute vec3 aVertexNormal;
+
+uniform mat4 uMVMatrix;
+uniform mat4 uPMatrix;
+uniform mat4 uNormalMatrix;
+uniform vec3 worldPosition;
+uniform mat4 u_Shadowmap_transform;
+uniform int objectType;
+uniform int isGround;
+uniform int level;
+uniform float it;
+uniform vec2 levelSize;
+
+varying vec2 uv;
+varying vec3 localPosition;
+varying highp vec3 vLighting;
+varying vec4 v_Vertex_relative_to_light;
+varying vec3 worldPositionOK;
+varying vec3 normal;
+float random(in vec2 p) { 
+	return fract(sin(dot(p.xy, vec2(12.9898,58.233))) * 43758.5453123); 
+}
+void main() {
+	normal = aVertexNormal;
+	vec3 vp = vertexPosition;
+	
+	if (isGround==1 && worldPosition.y<2.) { //Lave / Eau
+		vp.y += (sin(((worldPosition.z+vp.z)*(worldPosition.x+vp.x)*8.+it)/20.)*.1);
+		if (level<=1 || level==12) {
+			vp.y+=.8;
+		}
+	} 
+	if (isGround==1 && (level<9 || level==12)) { //Déforme le niveau
+		if (worldPosition.x + vp.x>0. && (worldPosition.x + vp.x < levelSize.y-1.)) {
+			float d = (worldPosition.x + vp.x) * (worldPosition.z + vp.z);
+			vp+=vec3(fract(d/2.)*.1, fract(d/5.)*.1, fract(d/10.)*.1);
+		}
+		
+		if (objectType==4) { //Switch, je les monte un peu
+			vp.y+=.18;
+		}
+	}
+	if (objectType==7) {
+		vp.y-=random(vec2(floor(it/4.0)))*0.2;
+	}
+	
+	v_Vertex_relative_to_light = uPMatrix * u_Shadowmap_transform * vec4(vp.xyz, 1.);
+	gl_Position = uPMatrix * uMVMatrix * vec4(vp,1.);
+	uv = aTextureCoord;
+	localPosition = vp;
+	vec3 directionalLightColor = vec3(.8);
+	if (level==0 || level==1 || level==2) {
+		directionalLightColor = vec3(1.);
+	} else if (level==3 || level==4 || level==5 || level==6) {
+		directionalLightColor = vec3(1., .8, .8);
+	}
+	vec4 transformedNormal = uNormalMatrix * vec4(aVertexNormal, 1.);
+	
+	vLighting = vec3(1.42) + (directionalLightColor * max(dot(transformedNormal.xyz, vec3(1.,-1.,1.)), .8));
+	worldPositionOK = worldPosition+vertexPosition;
+}
+</script>
+<script id="vertexShaderShadow" type="x-shader/x-vertex">
+precision mediump int;
+precision highp float;
+
+attribute vec3 vertexPosition;
+uniform vec3 worldPosition;
+uniform mat4 uMVMatrix;
+uniform mat4 uPMatrix;
+uniform int objectType;
+uniform int level;
+uniform vec2 levelSize;
+uniform float it;
+void main() {
+	vec3 vp = vertexPosition;
+	if (level<10) {
+		if (worldPosition.x + vp.x>0. && (worldPosition.x + vp.x < levelSize.y-1.)) {
+			float d = (worldPosition.x + vp.x) * (worldPosition.z + vp.z);
+			vp+=vec3(fract(d/2.)*.1, fract(d/5.)*.1, fract(d/10.)*.1);
+		}
+	}
+	if (objectType==4) { //Switch, je les monte un peu
+		vp.y+=.18;
+	}
+	
+	gl_Position = uPMatrix * uMVMatrix * vec4(vp, 1.);
+}
+</script>
+<script id="fragmentShaderShadow" type="x-shader/x-fragment">
+precision mediump int;
+precision highp float;
+void main() {
+	float z = 1.-gl_FragCoord.w*10.;
+	gl_FragColor = vec4(z,0.,0.,1.);
+}
+</script>
+</head><body onload="init();" onresize="resize()"><canvas id="game"></canvas><canvas id="HUD"></canvas>
+	<script>//#DEBUG
+	
+var stats = new Stats();//#DEBUG
+stats.showPanel(0);//#DEBUG
+document.body.appendChild( stats.dom );//#DEBUG
+	
+	</script><!--#DEBUG-->
+	<style type="text/css">/* #DEBUG */
+		#debug {/* #DEBUG */
+			position:absolute;/* #DEBUG */
+			background-color:#00000080;/* #DEBUG */
+			left:5px;/* #DEBUG */
+			top:20px;/* #DEBUG */
+			color:#FFF;/* #DEBUG */
+			font-family:Arial;/* #DEBUG */
+			padding:10px;/* #DEBUG */
+			/*display:none;*//* DEBUG */
+		}/* #DEBUG */
+	</style><!--#DEBUG-->
+<button style="position:absolute; top:5px; right:5px" onclick="onlyViewFromLight = !onlyViewFromLight">Switch</button><!--#DEBUG-->
+<div id="debug"><!--#DEBUG-->
+	<input type="range" min="-10" max="10" step="0.1" oninput="cameraX = parseFloat(this.value)" autocomplete="off"/><br/><!--#DEBUG-->
+	<input type="range" min="-10" max="10" step="0.1" oninput="cameraZ = parseFloat(this.value)" autocomplete="off"/><br/><!--#DEBUG-->
+	<input type="range" min="-10" max="10" step="0.1" oninput="cameraY = parseFloat(this.value)" autocomplete="off"/><br/><!--#DEBUG-->
+	
+	<input type="range" min="-1.57" max="1.57" step="0.1" oninput="cameraRotationX = parseFloat(this.value)" autocomplete="off"/><br/><!--#DEBUG-->
+	<input type="range" min="-1.57" max="1.57" step="0.1" oninput="cameraRotationY = parseFloat(this.value)" autocomplete="off"/><br/><!--#DEBUG-->
+	<input type="range" min="-1.57" max="1.57" step="0.1" oninput="cameraRotationZ = parseFloat(this.value)" autocomplete="off"/><br/><!--#DEBUG-->
+	
+	<button onclick="levelEnCours++;initLevels();">Next</button><!--#DEBUG-->
+</div><!--#DEBUG-->
+</body></html>
